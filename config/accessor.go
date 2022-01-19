@@ -58,4 +58,7 @@ type Options struct {
 
 	// Defines the root section to use with the accessor.
 	RootSection Section
+
+	// File Format
+	OutputFormat string
 }

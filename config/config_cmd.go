@@ -8,20 +8,22 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/ghodss/yaml"
-	"k8s.io/apimachinery/pkg/util/sets"
-
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+	"github.com/talos-systems/talos/pkg/machinery/config/encoder"
+	"gopkg.in/yaml.v3"
+	"k8s.io/apimachinery/pkg/util/sets"
 )
 
 const (
 	PathFlag        = "file"
 	StrictModeFlag  = "strict"
+	FormatFlag      = "format"
 	CommandValidate = "validate"
 	CommandDiscover = "discover"
 	CommandDocs     = "docs"
 )
+
 
 type AccessorProvider func(options Options) Accessor
 
@@ -58,23 +60,46 @@ func NewConfigCommand(accessorProvider AccessorProvider) *cobra.Command {
 		Use:   "docs",
 		Short: "Generate configuration documetation in rst format",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			sections := GetRootSection().GetSections()
-			orderedSectionKeys := sets.NewString()
-			for s := range sections {
-				orderedSectionKeys.Insert(s)
-			}
-			printToc(orderedSectionKeys)
-			visitedSection := map[string]bool{}
-			visitedType := map[reflect.Type]bool{}
-			for _, sectionKey := range orderedSectionKeys.List() {
-				if canPrint(sections[sectionKey].GetConfig()) {
-					printDocs(sectionKey, false, sections[sectionKey], visitedSection, visitedType)
+			fmt.Printf("use format: [%v]\n", opts.OutputFormat)
+			switch opts.OutputFormat {
+			case "rst":
+				sections := GetRootSection().GetSections()
+				orderedSectionKeys := sets.NewString()
+				for s := range sections {
+					orderedSectionKeys.Insert(s)
 				}
+				printToc(orderedSectionKeys)
+				visitedSection := map[string]bool{}
+				visitedType := map[reflect.Type]bool{}
+				for _, sectionKey := range orderedSectionKeys.List() {
+					if canPrint(sections[sectionKey].GetConfig()) {
+						printRstDocs(sectionKey, false, sections[sectionKey], visitedSection, visitedType)
+					}
+				}
+				return nil
+			case "yaml":
+				sections := GetRootSection().GetSections()
+				nodes := make(map[string]interface{})
+				constructYamlNodes(sections, nodes)
+				yamlNodes, err := encoder.NewEncoder(nodes).Marshal()
+				if err != nil {
+					return err
+				}
+				yamlByte, err := yaml.Marshal(yamlNodes)
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(yamlByte))
+				return nil
+			default:
+				red := color.New(color.FgRed).SprintFunc()
+				cmd.Println(red("Unsupported file format: %v", opts.OutputFormat))
+				return nil
 			}
-			return nil
 		},
 	}
 
+	docsCmd.Flags().StringVar(&opts.OutputFormat, FormatFlag, "rst", "")
 	// Configure Root Command
 	rootCmd.PersistentFlags().StringArrayVar(&opts.SearchPaths, PathFlag, []string{}, `Passes the config file to load.
 If empty, it'll first search for the config file path then, if found, will load config from there.`)
@@ -104,7 +129,20 @@ func redirectStdOut() (old, new *os.File) {
 	return
 }
 
-func printDocs(title string, isSubsection bool, section Section, visitedSection map[string]bool, visitedType map[reflect.Type]bool) {
+func constructYamlNodes(section SectionMap, nodes map[string]interface{}) {
+
+	for s := range section {
+		nodes[s] = section[s].GetConfig()
+		constructYamlNodes(section[s].GetSections(), nodes)
+	}
+}
+
+func printRstDocs(
+	title string,
+	isSubsection bool,
+	section Section,
+	visitedSection map[string]bool,
+	visitedType map[reflect.Type]bool) {
 	printTitle(title, isSubsection)
 	val := reflect.Indirect(reflect.ValueOf(section.GetConfig()))
 	if val.Kind() == reflect.Slice {
@@ -168,7 +206,7 @@ func printDocs(title string, isSubsection bool, section Section, visitedSection 
 	}
 
 	for _, sectionKey := range orderedSectionKeys.List() {
-		printDocs(sectionKey, true, NewSection(subsections[sectionKey], nil), visitedSection, visitedType)
+		printRstDocs(sectionKey, true, NewSection(subsections[sectionKey], nil), visitedSection, visitedType)
 	}
 }
 
